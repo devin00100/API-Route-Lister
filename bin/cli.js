@@ -2,20 +2,15 @@
 
 import { parseArgs } from 'node:util';
 import { readdir, stat, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join, extname, relative } from 'node:path';
 import chalk from 'chalk';
-import figlet from 'figlet';
 import ora from 'ora';
-import inquirer from 'inquirer';
-import { createRequire } from 'node:module';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execAsync = promisify(exec);
+import * as readline from 'node:readline';
 
 const SUPPORTED_EXTENSIONS = ['.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs'];
 
-const { values, positionals } = parseArgs({
+const parsed = parseArgs({
   options: {
     help: { type: 'boolean', short: 'h', default: false },
     framework: { type: 'string', short: 'f', default: 'auto' },
@@ -32,11 +27,14 @@ const { values, positionals } = parseArgs({
   strict: false,
 });
 
+const { values, positionals } = parsed;
+
 const c = chalk;
 
 function printBanner() {
-  console.log(c.cyan(figlet.textSync('API Route Lister', { font: 'Small Slant' })));
-  console.log(c.gray('━'.repeat(50)));
+  console.log(c.cyan('╔══════════════════════════════════════╗'));
+  console.log(c.cyan('║      API Route Lister v1.0.0          ║'));
+  console.log(c.cyan('╚══════════════════════════════════════╝'));
 }
 
 function printHelp() {
@@ -78,7 +76,6 @@ async function* walkDir(dir) {
 
 function detectFramework(files) {
   const content = files.map(f => f.content).join('\n');
-  
   if (content.includes("from 'next'") || content.includes('from "next"') || content.includes('Next.js')) return 'nextjs';
   if (content.includes("from 'express'") || content.includes('from "express"')) return 'express';
   if (content.includes("from '@fastify'") || content.includes('from "fastify"')) return 'fastify';
@@ -89,7 +86,6 @@ function detectFramework(files) {
 
 function extractRoutes(content, framework, filePath) {
   const routes = [];
-  
   if (framework === 'nextjs') {
     const lines = content.split('\n');
     lines.forEach((line, index) => {
@@ -105,7 +101,6 @@ function extractRoutes(content, framework, filePath) {
     });
     return routes;
   }
-  
   if (framework === 'hapi') {
     const lines = content.split('\n');
     lines.forEach((line, index) => {
@@ -118,10 +113,8 @@ function extractRoutes(content, framework, filePath) {
     });
     return routes;
   }
-  
   const prefixes = framework === 'fastify' ? ['fastify'] : framework === 'koa' ? ['router'] : ['app', 'router'];
   const verbs = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'all'];
-  
   prefixes.forEach(prefix => {
     verbs.forEach(verb => {
       const regex = new RegExp(prefix + '\\.' + verb + '\\s*\\(\\s*([\'"`])(.*?)\\1', 'gs');
@@ -131,7 +124,6 @@ function extractRoutes(content, framework, filePath) {
       }
     });
   });
-  
   const seen = new Set();
   return routes.filter(r => {
     const key = `${r.method}:${r.path}:${r.line}`;
@@ -181,260 +173,51 @@ function getCode(content, line, context = 15) {
   }));
 }
 
-async function displayCode(route, allRoutes) {
-  const filePath = join(process.cwd(), route.file);
-  const content = await readFile(filePath, 'utf-8');
-  const code = getCode(content, route.line);
-  
-  console.clear();
-  printBanner();
-  console.log(`\n${c.green('Route:')} ${c[getMethodColor(route.method)](route.method)} ${c.white(route.path)}`);
-  console.log(`${c.gray('File:')} ${route.file}:${route.line}\n`);
-  console.log(c.gray('─'.repeat(60)));
-  
-  code.forEach(({ num, text, highlight }) => {
-    const prefix = c.gray(String(num).padStart(4) + ' |');
-    if (highlight) {
-      console.log(`${prefix} ${c.bgYellow.black(text)}`);
-    } else {
-      console.log(`${prefix} ${text}`);
-    }
-  });
-  
-  console.log(c.gray('─'.repeat(60)));
-  console.log(`\n${c.cyan('↑/↓')} Navigate ${c.cyan('Enter')} Select ${c.cyan('C')} Copy ${c.cyan('Esc')} Exit\n`);
-}
-
-async function interactiveMode(routes, files) {
-  let selectedIndex = 0;
-  let searchQuery = '';
-  let filteredRoutes = [...routes];
-  
-  const fileContents = {};
-  for (const file of files) {
-    fileContents[file.path] = await readFile(file.path, 'utf-8');
-  }
-  
-  while (true) {
-    console.clear();
-    printBanner();
-    console.log(c.gray(`Found ${routes.length} routes\n`));
-    
-    if (searchQuery) {
-      console.log(c.yellow(`Searching: "${searchQuery}" (${filteredRoutes.length} matches)\n`));
-    }
-    
-    const displayRoutes = filteredRoutes.slice(0, 25);
-    
-    displayRoutes.forEach((route, i) => {
-      const marker = i === selectedIndex ? c.cyan('>') : ' ';
-      const methodColor = getMethodColor(route.method);
-      const fileName = route.file.split(/[/\\]/).pop();
-      if (i === selectedIndex) {
-        console.log(`${marker} ${c[methodColor](route.method.padEnd(7))} ${c.white(route.path)}`);
-        console.log(`  ${c.gray(fileName + ':' + route.line)}`);
-      } else {
-        console.log(`${marker} ${c[methodColor](route.method.padEnd(7))} ${c.gray(route.path)}`);
-      }
-    });
-    
-    if (filteredRoutes.length > 25) {
-      console.log(c.gray(`\n... ${filteredRoutes.length - 25} more (use search to filter)`));
-    }
-    
-    console.log(c.gray('\n' + '─'.repeat(60)));
-    console.log(c.green('[n]') + ' Next  ' + c.green('[p]') + ' Prev  ' + c.green('[v]') + ' View Code  ' + c.green('[/]') + ' Search  ' + c.green('[f]') + ' Filter  ' + c.green('[q]') + ' Quit');
-    
-    const { action } = await inquirer.prompt([{
-      type: 'input',
-      name: 'action',
-      message: 'Action:',
-      default: '',
-    }]);
-    
-    if (action === 'q' || action === 'quit' || action === 'exit') {
-      break;
-    } else if (action === 'n' || action === 'next') {
-      selectedIndex = Math.min(filteredRoutes.length - 1, selectedIndex + 1);
-    } else if (action === 'p' || action === 'prev' || action === 'previous') {
-      selectedIndex = Math.max(0, selectedIndex - 1);
-    } else if (action === 'v' || action === 'view' || action === '') {
-      if (filteredRoutes[selectedIndex]) {
-        const route = filteredRoutes[selectedIndex];
-        const filePath = join(process.cwd(), route.file);
-        const content = fileContents[filePath] || await readFile(filePath, 'utf-8');
-        
-        console.clear();
-        printBanner();
-        console.log(c.green('Route:') + ' ' + c[getMethodColor(route.method)](route.method) + ' ' + c.white(route.path));
-        console.log(c.gray('File:') + ' ' + route.file + ':' + route.line + '\n');
-        console.log(c.gray('─'.repeat(60)));
-        
-        const code = getCode(content, route.line, 20);
-        code.forEach(({ num, text, highlight }) => {
-          const prefix = c.gray(String(num).padStart(4) + ' |');
-          if (highlight) {
-            console.log(prefix + ' ' + c.bgYellow.black(text));
-          } else {
-            console.log(prefix + ' ' + text);
-          }
-        });
-        
-        console.log(c.gray('─'.repeat(60)));
-        console.log(c.green('[c]') + ' Copy Code  ' + c.green('[b]') + ' Back to list\n');
-        
-        const { codeAction } = await inquirer.prompt([{
-          type: 'input',
-          name: 'codeAction',
-          message: 'Action:',
-          default: '',
-        }]);
-        
-        if (codeAction === 'c' || codeAction === 'copy') {
-          const codeText = code.map(l => `${l.num} | ${l.text}`).join('\n');
-          console.log(c.cyan('\nCopy this code:\n'));
-          console.log(codeText);
-        }
-      }
-    } else if (action === '/') {
-      const { query } = await inquirer.prompt([{
-        type: 'input',
-        name: 'query',
-        message: 'Search routes:',
-        default: searchQuery,
-      }]);
-      searchQuery = query;
-      filteredRoutes = filterRoutes(routes, searchQuery);
-      selectedIndex = 0;
-    } else if (action === 'f' || action === 'filter') {
-      const { method } = await inquirer.prompt([{
-        type: 'list',
-        name: 'method',
-        message: 'Filter by method:',
-        choices: ['All', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'],
-      }]);
-      if (method !== 'All') {
-        filteredRoutes = routes.filter(r => r.method === method);
-        searchQuery = '';
-        selectedIndex = 0;
-      }
-    } else if (action === 'r' || action === 'reset') {
-      filteredRoutes = [...routes];
-      searchQuery = '';
-      selectedIndex = 0;
-    }
-  }
-}
-
-async function copyToClipboard(text) {
-  try {
-    if (process.platform === 'win32') {
-      await execAsync(`echo ${text.replace(/"/g, '\\"').replace(/\n/g, '\r\n')} | clip`);
-    } else {
-      await execAsync(`echo "${text}" | pbcopy`);
-    }
-  } catch {
-    console.log(c.yellow('\nCould not copy to clipboard'));
-  }
-}
-
 function formatTable(routes, files, showCode = false) {
-  if (routes.length === 0) {
-    console.log(c.yellow('\nNo routes found.'));
-    return;
-  }
-  
+  if (routes.length === 0) { console.log(c.yellow('\nNo routes found.')); return; }
   const methodWidth = 10;
   const pathWidth = Math.max(50, ...routes.map(r => r.path.length));
   const fileWidth = Math.max(40, ...routes.map(r => r.file.length));
-  
   console.log();
   console.log(c.bold(`${'METHOD'.padEnd(methodWidth)} ${'PATH'.padEnd(pathWidth)} ${'FILE'.padEnd(fileWidth)} ${'LINE'}`));
   console.log(c.gray('-'.repeat(methodWidth + pathWidth + fileWidth + 10)));
-  
   routes.forEach(route => {
     const methodColor = getMethodColor(route.method);
     console.log(`${c[methodColor](route.method.padEnd(methodWidth))} ${c.white(route.path.padEnd(pathWidth))} ${c.gray(route.file.padEnd(fileWidth))} ${c.gray(route.line)}`);
-    
-    if (showCode) {
-      const filePath = join(process.cwd(), route.file);
-      const content = files.find(f => f.path === filePath)?.content || '';
-      const code = getCode(content, route.line, 3);
-      code.forEach(({ num, text }) => {
-        console.log(c.gray(`    ${String(num).padStart(4)} | ${text}`));
-      });
-      console.log();
-    }
   });
 }
 
-function formatList(routes, files, showCode = false) {
-  if (routes.length === 0) {
-    console.log(c.yellow('\nNo routes found.'));
-    return;
-  }
-  
+function formatList(routes) {
+  if (routes.length === 0) { console.log(c.yellow('\nNo routes found.')); return; }
   console.log();
   routes.forEach(route => {
     const methodColor = getMethodColor(route.method);
     console.log(`${c[methodColor](route.method)} ${route.path} ${c.gray(`(${route.file}:${route.line})`)}`);
-    
-    if (showCode) {
-      const filePath = join(process.cwd(), route.file);
-      const content = files.find(f => f.path === filePath)?.content || '';
-      const code = getCode(content, route.line, 5);
-      code.forEach(({ num, text }) => {
-        console.log(c.gray(`  ${String(num)} | ${text}`));
-      });
-      console.log();
-    }
   });
 }
 
-function formatTree(routes, files, showCode = false) {
-  if (routes.length === 0) {
-    console.log(c.yellow('\nNo routes found.'));
-    return;
-  }
-  
+function formatTree(routes) {
+  if (routes.length === 0) { console.log(c.yellow('\nNo routes found.')); return; }
   const grouped = {};
   routes.forEach(route => {
     const parts = route.path.split('/').filter(Boolean);
     let current = grouped;
-    
     parts.forEach((part, i) => {
-      if (!current[part]) {
-        current[part] = { _routes: [], _children: {} };
-      }
-      if (i === parts.length - 1) {
-        current[part]._routes.push(route);
-      } else {
-        current = current[part]._children;
-      }
+      if (!current[part]) current[part] = { _routes: [], _children: {} };
+      if (i === parts.length - 1) current[part]._routes.push(route);
+      else current = current[part]._children;
     });
   });
-  
   function printNode(node, prefix = '', isLast = true) {
     const routeList = node._routes || [];
     const children = node._children || {};
     const childKeys = Object.keys(children);
-    
     routeList.forEach((route, i) => {
       const isLastRoute = i === routeList.length - 1 && childKeys.length === 0;
       const methodColor = getMethodColor(route.method);
       const connector = isLastRoute ? '└── ' : '├── ';
       console.log(`${prefix}${connector}${c[methodColor](route.method.padEnd(7))} ${c.white(route.path)}`);
-      
-      if (showCode) {
-        const filePath = join(process.cwd(), route.file);
-        const content = files.find(f => f.path === filePath)?.content || '';
-        const code = getCode(content, route.line, 3);
-        code.forEach(({ num, text }) => {
-          console.log(`${prefix}    ${c.gray(String(num) + ' | ' + text)}`);
-        });
-      }
     });
-    
     childKeys.forEach((key, i) => {
       const isLastChild = i === childKeys.length - 1;
       const connector = isLastChild ? '└── ' : '├── ';
@@ -442,7 +225,6 @@ function formatTree(routes, files, showCode = false) {
       printNode(children[key], prefix + (isLastChild ? '    ' : '│   '), isLastChild);
     });
   }
-  
   console.log();
   Object.keys(grouped).sort().forEach(key => {
     console.log(c.cyan(key));
@@ -455,16 +237,221 @@ function formatJson(routes) {
 }
 
 function formatMarkdown(routes) {
-  if (routes.length === 0) {
-    console.log('\nNo routes found.');
-    return;
-  }
-  
+  if (routes.length === 0) { console.log('\nNo routes found.'); return; }
   console.log('\n| METHOD | PATH | FILE | LINE |');
   console.log('|--------|------|------|------|');
   routes.forEach(route => {
     console.log(`| ${route.method} | ${route.path} | ${route.file} | ${route.line} |`);
   });
+}
+
+function ask(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => { rl.close(); resolve(answer); });
+  });
+}
+
+async function interactiveMode(routes, files) {
+  let selectedIndex = 0;
+  let page = 0;
+  const pageSize = 30;
+  let searchQuery = '';
+  let filteredRoutes = [...routes];
+  
+  const fileContents = {};
+  for (const file of files) {
+    fileContents[file.path] = await readFile(file.path, 'utf-8');
+  }
+   
+  function displayPage() {
+    console.clear();
+    printBanner();
+    
+    const totalPages = Math.ceil(filteredRoutes.length / pageSize) || 1;
+    console.log(c.cyan('API Route Lister') + c.gray(' | ') + c.green(`${filteredRoutes.length} routes`) + c.gray(' | Page ') + c.yellow(`${page + 1}/${totalPages}`));
+    
+    if (searchQuery) {
+      console.log(c.magenta(`\n  Search: "${searchQuery}"`) + c.gray(' (') + c.cyan('/') + c.gray(' to change)\n'));
+    } else {
+      console.log('');
+    }
+    
+    const start = page * pageSize;
+    const end = Math.min(start + pageSize, filteredRoutes.length);
+    
+    for (let i = start; i < end; i++) {
+      const route = filteredRoutes[i];
+      const isSelected = i === selectedIndex;
+      const marker = isSelected ? c.cyan('>') : ' ';
+      const methodColor = getMethodColor(route.method);
+      const displayNum = c.gray(`${String(i + 1).padStart(3)}. `);
+      
+      console.log(`${displayNum}${marker} ${c[methodColor](route.method.padEnd(7))} ${isSelected ? c.white(route.path) : c.gray(route.path)}`);
+    }
+    
+    if (totalPages > 1) {
+      console.log(c.gray('\n' + '─'.repeat(60)));
+      const pages = [];
+      for (let p = 0; p < totalPages; p++) {
+        pages.push(p === page ? c.cyan(`[${p + 1}]`) : c.gray(`[${p + 1}]`));
+      }
+      console.log(pages.join(' '));
+    }
+    
+    console.log(c.gray('\n' + '─'.repeat(60)));
+    console.log(c.green('[j]') + ' Next  ' + c.green('[k]') + ' Prev  ' + c.green('[v]') + ' View Code  ' + c.green('[g]') + ' Go To  ' + c.green('[/]') + ' Search  ' + c.green('[f]') + ' Filter  ' + c.green('[r]') + ' Reset  ' + c.green('[q]') + ' Quit\n');
+  }
+  
+  function goToRoute(index) {
+    selectedIndex = Math.max(0, Math.min(filteredRoutes.length - 1, index));
+    page = Math.floor(selectedIndex / pageSize);
+  }
+  
+  function showCodeView(route) {
+    const filePath = join(process.cwd(), route.file);
+    const content = fileContents[filePath] || readFileSync(filePath, 'utf-8');
+    
+    console.clear();
+    printBanner();
+    console.log(c.green('  Method: ') + c[getMethodColor(route.method)](route.method));
+    console.log(c.green('  Path:   ') + c.white(route.path));
+    console.log(c.green('  File:   ') + c.gray(route.file + ':' + route.line));
+    console.log(c.cyan('\n  CODE:\n'));
+    console.log(c.gray('─'.repeat(60)));
+    
+    const code = getCode(content, route.line, 20);
+    code.forEach(({ num, text, highlight }) => {
+      const prefix = c.gray(String(num).padStart(4) + ' |');
+      if (highlight) {
+        console.log(prefix + ' ' + c.bgYellow.black(text));
+      } else {
+        console.log(prefix + ' ' + text);
+      }
+    });
+    
+    console.log(c.gray('─'.repeat(60)));
+    console.log(c.cyan('ACTIONS:'));
+    console.log(c.green('  b') + ' - Back to list\n');
+  }
+  
+  displayPage();
+  
+  while (true) {
+    process.stdout.write(c.yellow('> '));
+    const input = await ask('');
+    const parts = input.trim().split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const arg = parts.slice(1).join(' ');
+    
+    if (cmd === 'q' || cmd === 'quit' || cmd === 'exit') {
+      console.log(c.green('\n  Thanks for using API Route Lister! Goodbye!\n'));
+      break;
+    } else if (cmd === 'j' || cmd === 'down') {
+      goToRoute(selectedIndex + 1);
+      displayPage();
+    } else if (cmd === 'k' || cmd === 'up') {
+      goToRoute(selectedIndex - 1);
+      displayPage();
+    } else if (cmd === 'g' || cmd === 'goto') {
+      if (arg) {
+        const routeNum = parseInt(arg);
+        if (routeNum && routeNum > 0 && routeNum <= filteredRoutes.length) {
+          goToRoute(routeNum - 1);
+        }
+        displayPage();
+      } else {
+        console.log(c.gray('\n  ╔══════════════════════════════════════════════════╗'));
+        console.log(c.gray('  ║') + c.cyan('  [g] Go To Route Number') + c.gray('                              ║'));
+        console.log(c.gray('  ╠══════════════════════════════════════════════════╣'));
+        console.log(c.gray('  ║') + c.white('  Example: ') + c.green('g 25') + c.gray('  or  ') + c.green('g 1') + c.gray('                          ║'));
+        console.log(c.gray('  ║') + c.gray('  Available: 1 - ') + c.yellow(`${filteredRoutes.length}`) + c.gray('                              ║'));
+        console.log(c.gray('  ╚══════════════════════════════════════════════════╝'));
+        process.stdout.write(c.yellow('\n  Enter route number: '));
+        const num = await ask('');
+        const routeNum = parseInt(num);
+        if (routeNum && routeNum > 0 && routeNum <= filteredRoutes.length) {
+          goToRoute(routeNum - 1);
+        }
+        displayPage();
+      }
+    } else if (cmd === 'v' || cmd === 'view') {
+      if (filteredRoutes[selectedIndex]) {
+        showCodeView(filteredRoutes[selectedIndex]);
+        process.stdout.write(c.yellow('\n  Press Enter to go back: '));
+        await ask('');
+        displayPage();
+      } else {
+        displayPage();
+      }
+    } else if (cmd === '/' || cmd === 'search') {
+      if (arg) {
+        searchQuery = arg;
+        filteredRoutes = filterRoutes(routes, searchQuery);
+        selectedIndex = 0;
+        page = 0;
+        displayPage();
+      } else {
+        console.log(c.gray('\n  ╔══════════════════════════════════════════════════╗'));
+        console.log(c.gray('  ║') + c.cyan('  [/] Search Routes') + c.gray('                                  ║'));
+        console.log(c.gray('  ╠══════════════════════════════════════════════════╣'));
+        console.log(c.gray('  ║') + c.white('  Example: ') + c.green('/users') + c.gray('  or  ') + c.green('/api/v1/*') + c.gray('                    ║'));
+        console.log(c.gray('  ║') + c.gray('  Supports partial match and patterns') + c.gray('              ║'));
+        console.log(c.gray('  ╚══════════════════════════════════════════════════╝'));
+        process.stdout.write(c.yellow('\n  Enter search text: '));
+        const query = await ask('');
+        if (query.trim()) {
+          searchQuery = query.trim();
+          filteredRoutes = filterRoutes(routes, searchQuery);
+          selectedIndex = 0;
+          page = 0;
+        }
+        displayPage();
+      }
+    } else if (cmd === 'f' || cmd === 'filter') {
+      if (arg && ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'ALL'].includes(arg.toUpperCase())) {
+        if (arg.toUpperCase() === 'ALL') {
+          filteredRoutes = [...routes];
+          searchQuery = '';
+        } else {
+          filteredRoutes = routes.filter(r => r.method === arg.toUpperCase());
+          searchQuery = '';
+        }
+        selectedIndex = 0;
+        page = 0;
+        displayPage();
+      } else {
+        console.log(c.gray('\n  ╔══════════════════════════════════════════════════╗'));
+        console.log(c.gray('  ║') + c.cyan('  [f] Filter by HTTP Method') + c.gray('                       ║'));
+        console.log(c.gray('  ╠══════════════════════════════════════════════════╣'));
+        console.log(c.gray('  ║') + c.white('  Options: ') + c.green('GET') + c.gray(', ') + c.green('POST') + c.gray(', ') + c.green('PUT') + c.gray(', ') + c.green('DELETE') + c.gray(', ') + c.green('PATCH') + c.gray('    ║'));
+        console.log(c.gray('  ║') + c.white('  Example: ') + c.green('f GET') + c.gray('  or  ') + c.green('f POST') + c.gray('                     ║'));
+        console.log(c.gray('  ╚══════════════════════════════════════════════════╝'));
+        process.stdout.write(c.yellow('\n  Enter HTTP method: '));
+        const method = await ask('');
+        if (method.toUpperCase() === 'ALL' || !method.trim()) {
+          filteredRoutes = [...routes];
+          searchQuery = '';
+        } else {
+          filteredRoutes = routes.filter(r => r.method === method.toUpperCase());
+          searchQuery = '';
+        }
+        selectedIndex = 0;
+        page = 0;
+        displayPage();
+      }
+    } else if (cmd === 'r' || cmd === 'reset') {
+      filteredRoutes = [...routes];
+      searchQuery = '';
+      selectedIndex = 0;
+      page = 0;
+      displayPage();
+    } else if (cmd === 'h' || cmd === 'help' || cmd === '') {
+      displayPage();
+    } else {
+      displayPage();
+    }
+  }
 }
 
 async function main() {
@@ -494,14 +481,10 @@ async function main() {
   }
   
   spinner.text = 'Detecting framework...';
-  
   let framework = values.framework;
-  if (framework === 'auto') {
-    framework = detectFramework(files);
-  }
+  if (framework === 'auto') framework = detectFramework(files);
   
   spinner.text = `Extracting routes (${framework})...`;
-  
   const allRoutes = [];
   files.forEach(({ path, content }) => {
     const routes = extractRoutes(content, framework, path);
@@ -509,9 +492,7 @@ async function main() {
   });
   
   const filteredRoutes = filterRoutes(allRoutes, values.filter);
-  
   spinner.succeed(`Found ${filteredRoutes.length} routes in ${files.length} files`);
-  
   console.log(c.gray(`\nFramework: ${c.cyan(framework.toUpperCase())}`));
   
   if (values.interactive) {
@@ -519,21 +500,14 @@ async function main() {
     return;
   }
   
-  if (values.json) {
-    formatJson(filteredRoutes);
-  } else if (values.markdown) {
-    formatMarkdown(filteredRoutes);
-  } else {
+  if (values.json) formatJson(filteredRoutes);
+  else if (values.markdown) formatMarkdown(filteredRoutes);
+  else {
     const showCode = values.code;
     switch (values.output) {
-      case 'list':
-        formatList(filteredRoutes, files, showCode);
-        break;
-      case 'tree':
-        formatTree(filteredRoutes, files, showCode);
-        break;
-      default:
-        formatTable(filteredRoutes, files, showCode);
+      case 'list': formatList(filteredRoutes); break;
+      case 'tree': formatTree(filteredRoutes); break;
+      default: formatTable(filteredRoutes, files, showCode);
     }
   }
   
@@ -542,7 +516,6 @@ async function main() {
     console.log(c.gray(`Source path: ${sourcePath}`));
     console.log(c.gray(`Framework: ${framework}`));
   }
-  
   console.log(c.cyan('\nTip: Use -i for interactive mode, -c to show code\n'));
 }
 
