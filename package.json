@@ -1,6 +1,6 @@
 {
   "name": "api-route-lister",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "The Ultimate CLI tool to list, explore and analyze API routes from source code",
   "bin": {
     "api-route-lister": "./bin/cli.js"
@@ -36,10 +36,10 @@
   },
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/devin00100/API-Route-Lister.git"
   },
   "bugs": {
-    "url": ""
+    "url": "https://github.com/devin00100/API-Route-Lister/issues"
   },
-  "homepage": ""
+  "homepage": "https://github.com/devin00100/API-Route-Lister#readme"
 }
